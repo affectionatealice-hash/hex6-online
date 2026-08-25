@@ -1,7 +1,6 @@
 "use strict";
-/* 6x6 战棋 · 权威服务器
-   完整游戏状态只存在于服务器内存中。
-   每个玩家收到的是「删减视图」：看不到对手的手牌内容和地雷位置。 */
+/* 6x6 战棋 · 权威服务器 v2
+   完整状态只存在于服务器内存中，每个玩家收到删减后的视图。 */
 
 const http = require("http");
 const fs   = require("fs");
@@ -10,25 +9,33 @@ const { WebSocketServer } = require("ws");
 
 const PORT = process.env.PORT || 3000;
 const N = 6;
+const MAX_DRAWS = 5;        // 每局每人最多抽 5 张
+const RAGE_BONUS = 2;       // 愤怒士兵格挡后的攻击加成
+const RAGE_CAP  = 7;        // 加成后攻击力上限
+const STALEMATE = 6;        // 连续 pass 达到此数判和局
+const HEAL_PER_TURN = 2;    // 单个单位每回合最多回复的血量（多个医疗兵不叠加）
 
 /* ---------------- 规则数据 ---------------- */
 const T = {
-  SOLDIER : { n:"普通士兵", i:"🗡️", hp:10, def:3,  atk:3, rng:"adj",  d:"近战 3 攻，最基础的兵。" },
-  ANGRY   : { n:"愤怒士兵", i:"😡", hp:10, def:3,  atk:5, rng:"adj",  sk:"block", d:"格挡每个新敌人的第一次攻击，格挡后攻击力永久 +2。" },
-  SHIELD  : { n:"盾兵",    i:"🛡️", hp:10, def:10, atk:3, rng:"adj",  d:"10 点护盾，实际耐久 20。" },
-  ARCHER  : { n:"弓箭手",  i:"🏹", hp:10, def:3,  atk:4, rng:"line", d:"横竖方向射第一个敌人，且无视格挡。" },
-  NINJA   : { n:"忍者",    i:"🥷", hp:10, def:0,  atk:4, rng:"adj",  sk:"dodge", d:"无护盾，但每次被打有 50% 闪避。" },
-  DOCTOR  : { n:"医疗兵",  i:"⚕️", hp:10, def:0,  atk:0, rng:"none", sk:"heal",  d:"每回合自动奶邻近友军 +2，残血友军拖回出生点。" },
-  FIREBALL: { n:"火球",    i:"🔥", spell:true, d:"炸敌方前两行的一个单位，10 伤害；不死则其攻击 -2。" },
-  MINE    : { n:"地雷",    i:"💣", spell:true, d:"埋在任意空格，对手看不见，踩中炸 10 点。" }
+  SOLDIER : { n:"普通士兵", i:"🗡️", hp:10, def:3,  atk:3, rng:"adj" },
+  ANGRY   : { n:"愤怒士兵", i:"😡", hp:10, def:3,  atk:5, rng:"adj", sk:"block" },
+  SHIELD  : { n:"盾兵",    i:"🛡️", hp:10, def:10, atk:3, rng:"adj" },
+  ARCHER  : { n:"弓箭手",  i:"🏹", hp:10, def:3,  atk:4, rng:"line" },
+  NINJA   : { n:"忍者",    i:"🥷", hp:10, def:0,  atk:4, rng:"adj", sk:"dodge" },
+  DOCTOR  : { n:"医疗兵",  i:"⚕️", hp:10, def:0,  atk:0, rng:"none", sk:"heal" },
+  FIREBALL: { n:"火球",    i:"🔥", spell:true },
+  MINE    : { n:"地雷",    i:"💣", spell:true }
 };
 const DECK_DEF = [["SOLDIER",6],["ANGRY",3],["NINJA",3],["SHIELD",3],
                   ["MINE",2],["FIREBALL",2],["DOCTOR",2],["ARCHER",2]];
 
-/* ---------------- 纯函数工具 ---------------- */
+/* ---------------- 工具 ---------------- */
 const rc = i => ({ r: Math.floor(i / N), c: i % N });
 const idx = (r, c) => (r < 0 || c < 0 || r >= N || c >= N) ? -1 : r * N + c;
 const spawnRow = pl => pl === 1 ? 0 : N - 1;
+
+/** 有效攻击力：基础攻击 + 怒气加成，受上限约束 */
+const effAtk = u => u.rage ? Math.min(u.atk + RAGE_BONUS, RAGE_CAP) : u.atk;
 
 function shuffled() {
   const d = [];
@@ -53,21 +60,16 @@ function neigh(p) {
 function newGame() {
   const d1 = shuffled(), d2 = shuffled();
   return {
-    units: [], mines: [], log: [], cur: 1, over: null, uid: 1, turn: 1,
+    units: [], mines: [], log: [], cur: 1, over: null, uid: 1, turn: 1, passes: 0,
     P: {
-      1: { hand: d1.slice(0, 7), deck: d1.slice(7), deployed: false, fresh: null },
-      2: { hand: d2.slice(0, 7), deck: d2.slice(7), deployed: false, fresh: null }
+      1: { hand: d1.slice(0, 7), deck: d1.slice(7), deployed: false, fresh: null, draws: 0 },
+      2: { hand: d2.slice(0, 7), deck: d2.slice(7), deployed: false, fresh: null, draws: 0 }
     }
   };
 }
-
 const unitAt  = (g, p) => g.units.find(u => u.pos === p);
 const minesAt = (g, p) => g.mines.filter(m => m.pos === p);
-
-function log(g, txt, cls) {
-  g.log.push({ txt, cls });
-  if (g.log.length > 80) g.log.shift();
-}
+function log(g, txt, cls) { g.log.push({ txt, cls }); if (g.log.length > 80) g.log.shift(); }
 
 function lineTargets(g, u) {
   const { r, c } = rc(u.pos), out = [];
@@ -100,22 +102,26 @@ function fireballCells(g, pl) {
   return g.units.filter(u => u.owner !== pl && rows.includes(rc(u.pos).r)).map(u => u.pos);
 }
 
-/* ---------------- 战斗结算 ---------------- */
+/* ---------------- 战斗 ---------------- */
 function damage(g, target, amt, attacker, opt) {
   opt = opt || {};
   const d = T[target.type];
+
   if (!opt.noDodge && d.sk === "dodge" && Math.random() < 0.5) {
     log(g, `🥷 ${d.n} 闪避了这次攻击！`, "ls");
     return false;
   }
-  // 弓箭手无视格挡
+
+  // 格挡：整局只触发一次；弓箭手无视格挡
   const canBlock = attacker && T[attacker.type].rng !== "line";
-  if (canBlock && d.sk === "block" && !target.blocked.includes(attacker.uid)) {
-    target.blocked.push(attacker.uid);
-    target.atk += 2;
-    log(g, `😡 ${d.n} 格挡了 ${T[attacker.type].n} 的首次攻击，怒气上涨！攻击力 → ${target.atk}`, "ls");
+  if (canBlock && d.sk === "block" && !target.blockUsed) {
+    target.blockUsed = true;
+    target.rage = true;
+    target.rageTurn = null;          // 下个己方回合生效，用完即消退
+    log(g, `😡 ${d.n} 格挡了 ${T[attacker.type].n} 的攻击！怒气爆发：下回合攻击力 ${Math.min(target.atk + RAGE_BONUS, RAGE_CAP)}`, "ls");
     return false;
   }
+
   let left = amt, ab = 0;
   if (target.shield > 0) { ab = Math.min(target.shield, left); target.shield -= ab; left -= ab; }
   target.hp -= left;
@@ -142,6 +148,7 @@ function rescue(g, u) {
       return;
     }
   }
+  log(g, `⚕️ 出生行已满，${T[u.type].n} 无法被拖回`, "l" + u.owner);
 }
 function checkOver(g) {
   [1, 2].forEach(pl => {
@@ -166,22 +173,35 @@ function endTurn(g) {
   g.cur = g.cur === 1 ? 2 : 1;
   g.turn++;
   g.P[g.cur].fresh = null;
-  // 医疗兵回合开始自动治疗
+
+  // 怒气只持续己方一个回合
+  g.units.filter(u => u.owner === g.cur && u.rage).forEach(u => {
+    if (u.rageTurn === null) {
+      u.rageTurn = g.turn;                      // 本回合可用
+    } else if (g.turn > u.rageTurn) {
+      u.rage = false; u.rageTurn = null;
+      log(g, `😤 ${T[u.type].n} 怒气消退，攻击力回到 ${u.atk}`, "l" + u.owner);
+    }
+  });
+
+  // 医疗兵自动治疗：同一单位每回合最多回 2 血，无论身边有几个医疗兵
+  const healed = new Set();
   g.units.filter(u => u.owner === g.cur && u.type === "DOCTOR").forEach(doc => {
     const cand = g.units
       .filter(x => x.owner === g.cur && x !== doc && x.hp < T[x.type].hp)
+      .filter(x => !healed.has(x.uid))          // 本回合已被奶过的跳过
       .filter(x => neigh(doc.pos).includes(x.pos))
       .sort((a, b) => a.hp - b.hp);
     if (cand[0]) {
       const t = cand[0];
-      t.hp = Math.min(T[t.type].hp, t.hp + 2);
-      log(g, `⚕️ 医疗兵治疗 ${T[t.type].n} +2（现 ${t.hp} 血）`, "l" + g.cur);
+      t.hp = Math.min(T[t.type].hp, t.hp + HEAL_PER_TURN);
+      healed.add(t.uid);
+      log(g, `⚕️ 医疗兵治疗 ${T[t.type].n} +${HEAL_PER_TURN}（现 ${t.hp} 血）`, "l" + g.cur);
     }
   });
 }
 
-/* ---------------- 行动校验与执行 ----------------
-   全部在服务器端校验：客户端伪造消息也无法作弊。 */
+/* ---------------- 行动校验 ---------------- */
 function applyAction(g, pl, a) {
   if (g.over) return "对局已结束";
   if (pl !== g.cur) return "还没轮到你";
@@ -189,16 +209,26 @@ function applyAction(g, pl, a) {
 
   if (a.type === "pass") {
     log(g, `玩家${pl} 跳过回合`, "l" + pl);
-    endTurn(g); return null;
+    g.passes++;
+    if (g.passes >= STALEMATE) {
+      g.over = "draw";
+      log(g, "双方连续跳过，判定为和局。", "ls");
+      return null;
+    }
+    endTurn(g);
+    return null;
   }
+  g.passes = 0;
 
   if (a.type === "draw") {
+    if (P.draws >= MAX_DRAWS) return `本局抽牌已用完（上限 ${MAX_DRAWS} 张）`;
     if (!P.deck.length) return "牌堆已空";
     const c = P.deck.shift();
     P.hand.push(c);
-    log(g, `玩家${pl} 抽了一张牌`, "l" + pl);
+    P.draws++;
+    log(g, `玩家${pl} 抽了一张牌（还剩 ${MAX_DRAWS - P.draws} 次）`, "l" + pl);
     endTurn(g);
-    P.fresh = c;               // 只有本人能看到抽了什么
+    P.fresh = c;                                // 只有本人看得到抽到什么
     return null;
   }
 
@@ -208,7 +238,7 @@ function applyAction(g, pl, a) {
     if (!placeCells(g, pl).includes(a.pos)) return "只能布置在自己出生行的空格";
     const d = T[a.card];
     const u = { uid: g.uid++, type: a.card, owner: pl, hp: d.hp, shield: d.def,
-                atk: d.atk, pos: a.pos, blocked: [] };
+                atk: d.atk, pos: a.pos, blockUsed: false, rage: false, rageTurn: null };
     g.units.push(u);
     P.hand.splice(P.hand.indexOf(a.card), 1);
     P.deployed = true;
@@ -236,7 +266,7 @@ function applyAction(g, pl, a) {
     const dead = damage(g, t, 10, null);
     if (!dead && g.units.includes(t)) {
       t.atk = Math.max(0, t.atk - 2);
-      log(g, `${T[t.type].n} 被烧伤，攻击力降为 ${t.atk}`, "ls");
+      log(g, `${T[t.type].n} 被烧伤，攻击力降为 ${effAtk(t)}`, "ls");
     }
     checkOver(g); endTurn(g);
     return null;
@@ -256,8 +286,9 @@ function applyAction(g, pl, a) {
   if (a.type === "attack") {
     if (!atkCells(g, u).includes(a.pos)) return "超出攻击范围";
     const t = unitAt(g, a.pos);
-    log(g, `⚔️ ${T[u.type].n} 攻击 ${T[t.type].n}（攻击力 ${u.atk}）`, "l" + pl);
-    damage(g, t, u.atk, u);
+    const dmg = effAtk(u);
+    log(g, `⚔️ ${T[u.type].n} 攻击 ${T[t.type].n}（攻击力 ${dmg}${u.rage ? "，怒气中" : ""}）`, "l" + pl);
+    damage(g, t, dmg, u);
     checkOver(g); endTurn(g);
     return null;
   }
@@ -265,42 +296,37 @@ function applyAction(g, pl, a) {
   return "未知的行动";
 }
 
-/* ---------------- 视图删减（核心保密逻辑） ---------------- */
+/* ---------------- 视图删减 ---------------- */
 function viewFor(g, pl) {
   const opp = pl === 1 ? 2 : 1;
   return {
-    you: pl,
-    cur: g.cur,
-    turn: g.turn,
-    over: g.over,
-    // 棋盘上的单位是公开信息
-    units: g.units.map(u => ({ uid: u.uid, type: u.type, owner: u.owner,
-                               hp: u.hp, shield: u.shield, atk: u.atk, pos: u.pos })),
-    // 只发送自己的地雷
+    you: pl, cur: g.cur, turn: g.turn, over: g.over,
+    units: g.units.map(u => ({
+      uid: u.uid, type: u.type, owner: u.owner, pos: u.pos,
+      hp: u.hp, shield: u.shield, atk: effAtk(u), rage: !!u.rage
+    })),
     mines: g.mines.filter(m => m.owner === pl).map(m => ({ pos: m.pos })),
-    // 只发送自己的手牌内容，对手只给数量
     hand: g.P[pl].hand.slice(),
     fresh: g.P[pl].fresh,
     deckCount: g.P[pl].deck.length,
+    drawsLeft: MAX_DRAWS - g.P[pl].draws,
     oppHandCount: g.P[opp].hand.length,
     oppDeckCount: g.P[opp].deck.length,
+    oppDrawsLeft: MAX_DRAWS - g.P[opp].draws,
     log: g.log
   };
 }
 
-/* ---------------- 房间管理 ---------------- */
+/* ---------------- 房间 ---------------- */
 const rooms = new Map();
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function makeCode() {
   let c;
-  do {
-    c = Array.from({ length: 4 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join("");
-  } while (rooms.has(c));
+  do { c = Array.from({ length: 4 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join(""); }
+  while (rooms.has(c));
   return c;
 }
-function send(ws, obj) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
-}
+const send = (ws, obj) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); };
 function broadcast(room) {
   [1, 2].forEach(pl => {
     const s = room.sock[pl];
@@ -309,28 +335,24 @@ function broadcast(room) {
   });
 }
 
-/* ---------------- HTTP + WebSocket ---------------- */
+/* ---------------- HTTP + WS ---------------- */
 const server = http.createServer((req, res) => {
-  const file = req.url === "/" || req.url.startsWith("/?") ? "/index.html" : req.url.split("?")[0];
+  const file = (req.url === "/" || req.url.startsWith("/?")) ? "/index.html" : req.url.split("?")[0];
   const fp = path.join(__dirname, "public", path.normalize(file).replace(/^(\.\.[/\\])+/, ""));
   fs.readFile(fp, (err, data) => {
     if (err) { res.writeHead(404); res.end("404"); return; }
-    const ext = path.extname(fp);
     const mime = { ".html": "text/html; charset=utf-8", ".js": "text/javascript",
-                   ".css": "text/css" }[ext] || "application/octet-stream";
+                   ".css": "text/css" }[path.extname(fp)] || "application/octet-stream";
     res.writeHead(200, { "Content-Type": mime });
     res.end(data);
   });
 });
 
 const wss = new WebSocketServer({ server });
-
 wss.on("connection", ws => {
   ws.room = null; ws.pl = null;
-
   ws.on("message", raw => {
-    let m;
-    try { m = JSON.parse(raw); } catch { return; }
+    let m; try { m = JSON.parse(raw); } catch { return; }
 
     if (m.t === "create") {
       const code = makeCode();
@@ -339,38 +361,30 @@ wss.on("connection", ws => {
       ws.room = room; ws.pl = 1;
       send(ws, { t: "joined", you: 1, code });
       broadcast(room);
-      return;
     }
-
-    if (m.t === "join") {
+    else if (m.t === "join") {
       const room = rooms.get(String(m.code || "").toUpperCase());
       if (!room) return send(ws, { t: "err", msg: "房间不存在" });
       if (room.sock[2] && room.sock[2].readyState === 1) return send(ws, { t: "err", msg: "房间已满" });
-      room.sock[2] = ws;
-      ws.room = room; ws.pl = 2;
+      room.sock[2] = ws; ws.room = room; ws.pl = 2;
       send(ws, { t: "joined", you: 2, code: room.code });
       log(room.game, "对手已加入，对局开始！", "ls");
       broadcast(room);
-      return;
     }
-
-    if (m.t === "act") {
+    else if (m.t === "act") {
       const room = ws.room;
       if (!room) return;
       if (!(room.sock[1] && room.sock[2])) return send(ws, { t: "err", msg: "等待对手加入" });
       const err = applyAction(room.game, ws.pl, m.a || {});
       if (err) send(ws, { t: "err", msg: err });
       broadcast(room);
-      return;
     }
-
-    if (m.t === "restart") {
+    else if (m.t === "restart") {
       const room = ws.room;
       if (!room) return;
       room.game = newGame();
       log(room.game, `玩家${ws.pl} 发起了新的一局`, "ls");
       broadcast(room);
-      return;
     }
   });
 
@@ -385,5 +399,4 @@ wss.on("connection", ws => {
 });
 
 server.listen(PORT, () => console.log("6x6 战棋服务器已启动: http://localhost:" + PORT));
-
-module.exports = { newGame, applyAction, viewFor, T };
+module.exports = { newGame, applyAction, viewFor, T, effAtk };
