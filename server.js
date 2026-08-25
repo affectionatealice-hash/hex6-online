@@ -150,9 +150,25 @@ function rescue(g, u) {
   }
   log(g, `⚕️ 出生行已满，${T[u.type].n} 无法被拖回`, "l" + u.owner);
 }
+/* 败北条件：棋盘上没兵，且手里也没有能变出兵的牌。
+   地雷和火球不算——它们无法让你重新拥有单位。
+   把 DRAW_LIFELINE 设为 true，则「还有抽牌次数」也算一线生机。 */
+const DRAW_LIFELINE = false;
+
+function canRebuild(g, pl) {
+  const P = g.P[pl];
+  if (P.hand.some(c => !T[c].spell)) return true;              // 手上还有单位牌
+  if (DRAW_LIFELINE && P.draws < MAX_DRAWS && P.deck.some(c => !T[c].spell)) return true;
+  return false;
+}
 function checkOver(g) {
+  if (g.over) return;
   [1, 2].forEach(pl => {
-    if (g.P[pl].deployed && !g.units.some(u => u.owner === pl)) g.over = pl === 1 ? 2 : 1;
+    const hasUnits = g.units.some(u => u.owner === pl);
+    if (!hasUnits && !canRebuild(g, pl)) {
+      g.over = pl === 1 ? 2 : 1;
+      log(g, `玩家${pl} 已无单位、也无可布置的单位牌 —— 玩家${g.over} 获胜！`, "ls");
+    }
   });
 }
 function stepMine(g, u) {
@@ -253,7 +269,7 @@ function applyAction(g, pl, a) {
     g.mines.push({ pos: a.pos, owner: pl });
     P.hand.splice(P.hand.indexOf("MINE"), 1);
     log(g, `玩家${pl} 埋下了一颗地雷（位置保密）`, "l" + pl);
-    endTurn(g);
+    checkOver(g); endTurn(g);
     return null;
   }
 
