@@ -1,0 +1,9 @@
+{
+  "name": "hex6-tactics",
+  "version": "1.0.0",
+  "description": "6x6 双人联机战棋（权威服务器，隐藏信息）",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "ws": "^8.18.0" }
+}

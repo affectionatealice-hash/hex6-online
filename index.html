@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>6x6 战棋 · 联机对战</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+     background:#0d1226;color:#e8ecf8;display:flex;flex-direction:column;padding:8px;gap:8px}
+.top{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+.top h1{font-size:15px;white-space:nowrap}
+.code{font-size:12px;background:#1d2650;border:1px solid #33407e;padding:4px 8px;border-radius:6px;
+  letter-spacing:2px;font-weight:700;color:#7dd3fc;cursor:pointer}
+.turnbar{flex:1;text-align:center;font-size:13px;padding:6px 10px;border-radius:8px;
+  background:#161d3d;border:1px solid #2a3466}
+.turnbar.me{border-color:#22c55e;color:#86efac}
+.turnbar.opp{border-color:#64748b;color:#94a3b8}
+.main{flex:1;min-height:0;display:grid;grid-template-columns:1fr 290px;gap:10px}
+@media(max-width:820px){.main{grid-template-columns:1fr 200px}}
+.left{display:flex;flex-direction:column;min-height:0;gap:8px}
+.boardbox{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;position:relative}
+.board{display:grid;grid-template-columns:repeat(6,1fr);grid-template-rows:repeat(6,1fr);
+  gap:4px;background:#070b1a;padding:6px;border-radius:10px;border:1px solid #222c55}
+.cell{background:#141a35;border:2px solid #232c52;border-radius:6px;display:flex;
+  align-items:center;justify-content:center;cursor:pointer;position:relative;transition:.12s;overflow:hidden}
+.cell:hover{border-color:#4b5aa8}
+.cell.mySpawn{background:#101c33}
+.cell.oppSpawn{background:#2a1420}
+.cell.sel{border-color:#fbbf24;box-shadow:0 0 0 2px #fbbf2455}
+.cell.move{border-color:#22c55e;background:#123020}
+.cell.atk{border-color:#ef4444;background:#3a1218}
+.cell.place{border-color:#38bdf8;background:#0e2a3a}
+.u{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.u .ic{font-size:1.55em;line-height:1.1}
+.u .nm{font-size:.6em;opacity:.85;white-space:nowrap}
+.u.mine .nm{color:#86efac}
+.u.foe .nm{color:#fca5a5}
+.bars{width:80%;display:flex;flex-direction:column;gap:1px;margin-top:2px}
+.bar{height:3px;border-radius:2px;background:#00000066;overflow:hidden}
+.bar i{display:block;height:100%}
+.bar.hp i{background:#22c55e}.bar.sh i{background:#60a5fa}
+.stat{font-size:.55em;opacity:.75;white-space:nowrap;margin-top:1px}
+.mk{position:absolute;top:1px;right:2px;font-size:.7em}
+.side{display:flex;flex-direction:column;gap:8px;min-height:0;overflow-y:auto}
+.panel{background:#141a35;border:1px solid #232c52;border-radius:10px;padding:8px;flex:0 0 auto}
+.panel h3{font-size:11px;color:#7dd3fc;margin-bottom:6px;letter-spacing:1px}
+.hand{display:flex;flex-wrap:wrap;gap:5px}
+.card{background:#1d2650;border:1px solid #33407e;border-radius:6px;padding:4px 6px;font-size:10px;
+  cursor:pointer;min-width:58px;text-align:center;position:relative;transition:.12s}
+.card:hover{background:#28336b}
+.card.on{border-color:#fbbf24;background:#3a3418}
+.card.fresh{border-color:#22c55e;box-shadow:0 0 8px #22c55e55}
+.card .ci{font-size:15px;display:block}
+.card small{opacity:.6;font-size:9px}
+.card .new{position:absolute;top:-6px;right:-5px;background:#22c55e;color:#05230f;
+  font-size:8px;padding:1px 4px;border-radius:6px;font-weight:700}
+.btns{display:flex;flex-wrap:wrap;gap:5px}
+button{background:#2563eb;color:#fff;border:0;padding:7px 10px;border-radius:6px;
+  font-size:11px;cursor:pointer;font-family:inherit}
+button:hover{filter:brightness(1.15)}
+button.g{background:#334155}
+button:disabled{opacity:.4;cursor:not-allowed}
+.logbox{flex:0 0 92px;overflow-y:auto;font-size:10px;line-height:1.6;
+  background:#141a35;border:1px solid #232c52;border-radius:10px;padding:6px}
+.logbox .l1{color:#93c5fd}.logbox .l2{color:#fca5a5}.logbox .ls{color:#fbbf24}
+.hint{font-size:10px;opacity:.7;line-height:1.5;margin-top:5px}
+.overlay{position:absolute;inset:0;background:#070b1aee;border-radius:10px;display:flex;
+  flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;padding:16px;z-index:5}
+.overlay h2{font-size:20px}
+.lobby{position:fixed;inset:0;background:#0d1226;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:16px;z-index:100;padding:20px;text-align:center}
+.lobby input{background:#1d2650;border:1px solid #33407e;color:#fff;padding:10px;border-radius:8px;
+  font-size:20px;text-align:center;letter-spacing:6px;width:180px;text-transform:uppercase;font-family:inherit}
+.toast{position:fixed;left:50%;transform:translateX(-50%);top:10px;background:#fbbf24;color:#111;
+  padding:8px 14px;border-radius:6px;font-size:12px;font-weight:600;z-index:200}
+details{font-size:10px;line-height:1.6;opacity:.85}
+summary{cursor:pointer;color:#7dd3fc;font-size:11px}
+table{width:100%;border-collapse:collapse;font-size:9px;margin-top:5px}
+td,th{border:1px solid #2a3466;padding:2px 3px;text-align:center}
+</style>
+</head>
+<body>
+
+<div class="lobby" id="lobby">
+  <h1 style="font-size:24px">⚔️ 6x6 战棋 · 联机</h1>
+  <div style="opacity:.75;font-size:13px;max-width:340px;line-height:1.7">
+    一人创建房间，把 4 位房间码发给对方。<br>手牌和地雷由服务器保管，对手无法窥探。
+  </div>
+  <button style="font-size:14px;padding:10px 20px" onclick="createRoom()">创建房间</button>
+  <div style="opacity:.5;font-size:12px">— 或 —</div>
+  <input id="codeInput" maxlength="4" placeholder="房间码">
+  <button class="g" onclick="joinRoom()">加入房间</button>
+  <div id="lobbyMsg" style="color:#fca5a5;font-size:12px;height:16px"></div>
+</div>
+
+<div class="top">
+  <h1>⚔️ 6x6</h1>
+  <div class="code" id="codeTag" title="点击复制">----</div>
+  <div class="turnbar" id="turnbar">连接中…</div>
+</div>
+
+<div class="main">
+  <div class="left">
+    <div class="boardbox">
+      <div class="board" id="board"></div>
+      <div class="overlay" id="overlay" style="display:none"></div>
+    </div>
+    <div class="logbox" id="log"></div>
+  </div>
+  <div class="side">
+    <div class="panel">
+      <h3>我的手牌 <span id="handowner"></span></h3>
+      <div class="hand" id="hand"></div>
+      <div class="hint" id="hint"></div>
+    </div>
+    <div class="panel">
+      <h3>行动（每回合一次）</h3>
+      <div class="btns">
+        <button id="btnDraw">抽一张牌</button>
+        <button class="g" id="btnPass">跳过</button>
+        <button class="g" id="btnCancel">取消选择</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>战场概况</h3>
+      <div id="stats" style="font-size:11px;line-height:1.7"></div>
+    </div>
+    <div class="panel">
+      <details>
+        <summary>规则说明</summary>
+        <table>
+          <tr><th>单位</th><th>血</th><th>防</th><th>攻</th><th>技能</th></tr>
+          <tr><td>🗡️普通士兵</td><td>10</td><td>3</td><td>3</td><td>—</td></tr>
+          <tr><td>😡愤怒士兵</td><td>10</td><td>3</td><td>5</td><td>格挡新敌人首击，之后攻击+2</td></tr>
+          <tr><td>🛡️盾兵</td><td>10</td><td>10</td><td>3</td><td>—</td></tr>
+          <tr><td>🏹弓箭手</td><td>10</td><td>3</td><td>4</td><td>横竖射第一个敌人，无视格挡</td></tr>
+          <tr><td>🥷忍者</td><td>10</td><td>0</td><td>4</td><td>50% 闪避</td></tr>
+          <tr><td>⚕️医疗兵</td><td>10</td><td>0</td><td>0</td><td>回合开始自动奶邻近友军+2</td></tr>
+          <tr><td>🔥火球</td><td>—</td><td>—</td><td>10</td><td>打敌方前两行，存活者攻击-2</td></tr>
+          <tr><td>💣地雷</td><td>—</td><td>—</td><td>10</td><td>对手不可见，踩中爆炸</td></tr>
+        </table>
+        <div class="hint">防御=护盾池，先扣盾再扣血。「周围1」含斜角 8 格。每回合只做一件事。</div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const T = {
+  SOLDIER :{n:"普通士兵",i:"🗡️",hp:10,def:3, atk:3,rng:"adj"},
+  ANGRY   :{n:"愤怒士兵",i:"😡",hp:10,def:3, atk:5,rng:"adj"},
+  SHIELD  :{n:"盾兵",   i:"🛡️",hp:10,def:10,atk:3,rng:"adj"},
+  ARCHER  :{n:"弓箭手", i:"🏹",hp:10,def:3, atk:4,rng:"line"},
+  NINJA   :{n:"忍者",   i:"🥷",hp:10,def:0, atk:4,rng:"adj"},
+  DOCTOR  :{n:"医疗兵", i:"⚕️",hp:10,def:0, atk:0,rng:"none"},
+  FIREBALL:{n:"火球",   i:"🔥",spell:true},
+  MINE    :{n:"地雷",   i:"💣",spell:true}
+};
+const N=6;
+let V=null, ws=null, sel={card:null,uid:null}, lastFresh=null, oppLeft=false;
+
+const rc=i=>({r:Math.floor(i/N),c:i%N});
+const id=(r,c)=>(r<0||c<0||r>=N||c>=N)?-1:r*N+c;
+const unitAt=p=>V.units.find(u=>u.pos===p);
+const myUnit=()=>V.units.find(u=>u.uid===sel.uid);
+const spawnRow=pl=>pl===1?0:N-1;
+const myTurn=()=>V&&!V.over&&V.cur===V.you;
+
+let toastT=null;
+function toast(m){
+  const o=document.querySelector('.toast'); if(o)o.remove();
+  const e=document.createElement('div'); e.className='toast'; e.textContent=m;
+  document.body.appendChild(e); clearTimeout(toastT); toastT=setTimeout(()=>e.remove(),1800);
+}
+
+/* 高亮计算（只用公开信息，所以放在客户端很安全） */
+function neigh(p){
+  const {r,c}=rc(p),o=[];
+  for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++){
+    if(!dr&&!dc)continue; const q=id(r+dr,c+dc); if(q>=0)o.push(q);
+  } return o;
+}
+function lineTargets(u){
+  const {r,c}=rc(u.pos),o=[];
+  [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{
+    let rr=r+dr,cc=c+dc;
+    for(;;){ const q=id(rr,cc); if(q<0)break;
+      const t=unitAt(q); if(t){ if(t.owner!==u.owner)o.push(q); break; } rr+=dr; cc+=dc; }
+  }); return o;
+}
+const moveCells=u=>neigh(u.pos).filter(p=>!unitAt(p));
+function atkCells(u){
+  const d=T[u.type];
+  if(d.rng==='none')return[];
+  if(d.rng==='line')return lineTargets(u);
+  return neigh(u.pos).filter(p=>{const t=unitAt(p);return t&&t.owner!==u.owner;});
+}
+function placeCells(){
+  const r=spawnRow(V.you),o=[];
+  for(let c=0;c<N;c++){const p=id(r,c); if(!unitAt(p))o.push(p);} return o;
+}
+function mineCells(){const o=[];for(let p=0;p<N*N;p++)if(!unitAt(p))o.push(p);return o;}
+function fireballCells(){
+  const rows=V.you===1?[N-1,N-2]:[0,1];
+  return V.units.filter(u=>u.owner!==V.you&&rows.includes(rc(u.pos).r)).map(u=>u.pos);
+}
+
+/* 网络 */
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(proto+'://'+location.host);
+  ws.onmessage=e=>{
+    const m=JSON.parse(e.data);
+    if(m.t==='joined'){ document.getElementById('lobby').style.display='none';
+      document.getElementById('codeTag').textContent=m.code; }
+    if(m.t==='state'){ V=m.view; V.bothHere=m.bothHere; oppLeft=false; render(); }
+    if(m.t==='err'){ toast(m.msg); document.getElementById('lobbyMsg').textContent=m.msg; }
+    if(m.t==='oppLeft'){ oppLeft=true; render(); }
+  };
+  ws.onclose=()=>{ const tb=document.getElementById('turnbar');
+    tb.textContent='连接已断开，请刷新页面'; tb.className='turnbar'; };
+}
+const send=o=>ws&&ws.readyState===1&&ws.send(JSON.stringify(o));
+function createRoom(){ send({t:'create'}); }
+function joinRoom(){
+  const c=document.getElementById('codeInput').value.trim().toUpperCase();
+  if(c.length!==4){ document.getElementById('lobbyMsg').textContent='请输入 4 位房间码'; return; }
+  send({t:'join',code:c});
+}
+const act=a=>{ sel={card:null,uid:null}; send({t:'act',a}); };
+
+/* 点击 */
+function clickCell(p){
+  if(!myTurn())return toast('还没轮到你');
+  if(sel.card){
+    const c=sel.card;
+    if(c==='MINE')return act({type:'mine',pos:p});
+    if(c==='FIREBALL'){ return fireballCells().includes(p)?act({type:'fireball',pos:p}):toast('火球只能打敌方前两行'); }
+    return placeCells().includes(p)?act({type:'place',card:c,pos:p}):toast('只能布置在自己出生行的空格');
+  }
+  if(sel.uid!=null){
+    const u=myUnit();
+    if(u){
+      if(atkCells(u).includes(p))return act({type:'attack',uid:u.uid,pos:p});
+      if(moveCells(u).includes(p))return act({type:'move',uid:u.uid,pos:p});
+    }
+    const t=unitAt(p);
+    sel.uid=(t&&t.owner===V.you)?t.uid:null; render(); return;
+  }
+  const t=unitAt(p);
+  if(t&&t.owner===V.you){ sel.uid=t.uid; render(); }
+  else if(t) toast('那是对手的单位');
+}
+
+function fitBoard(){
+  const box=document.querySelector('.boardbox'),b=document.getElementById('board');
+  const s=Math.floor(Math.min(box.clientWidth,box.clientHeight));
+  if(s>0){b.style.width=s+'px';b.style.height=s+'px';b.style.fontSize=(s/6*0.2)+'px';}
+}
+window.addEventListener('resize',fitBoard);
+
+function render(){
+  if(!V)return;
+  if(V.fresh&&V.fresh!==lastFresh){ toast('你抽到了 '+T[V.fresh].i+' '+T[V.fresh].n); }
+  lastFresh=V.fresh;
+
+  const board=document.getElementById('board'); board.innerHTML='';
+  let mv=[],ak=[],pc=[];
+  if(myTurn()){
+    if(sel.uid!=null){ const u=myUnit(); if(u){mv=moveCells(u);ak=atkCells(u);} }
+    if(sel.card==='MINE')pc=mineCells();
+    else if(sel.card==='FIREBALL')ak=fireballCells();
+    else if(sel.card)pc=placeCells();
+  }
+  const mineRow=spawnRow(V.you);
+  for(let p=0;p<N*N;p++){
+    const {r}=rc(p),d=document.createElement('div');
+    d.className='cell'+(r===mineRow?' mySpawn':r===spawnRow(V.you===1?2:1)?' oppSpawn':'');
+    if(mv.includes(p))d.className+=' move';
+    if(ak.includes(p))d.className+=' atk';
+    if(pc.includes(p))d.className+=' place';
+    const u=unitAt(p);
+    if(u){
+      if(sel.uid===u.uid)d.className+=' sel';
+      const t=T[u.type],own=u.owner===V.you;
+      d.innerHTML=`<div class="u ${own?'mine':'foe'}">
+        <div class="ic">${t.i}</div>
+        <div class="nm">${own?'我':'敌'} ${t.n}</div>
+        <div class="bars">
+          <div class="bar hp"><i style="width:${u.hp/t.hp*100}%"></i></div>
+          ${t.def?`<div class="bar sh"><i style="width:${u.shield/t.def*100}%"></i></div>`:''}
+        </div>
+        <div class="stat">${u.hp}血 ${u.shield}盾 ${u.atk}攻</div></div>`;
+    }
+    if(V.mines.some(m=>m.pos===p))d.innerHTML+='<div class="mk">💣</div>';
+    d.onclick=()=>clickCell(p);
+    board.appendChild(d);
+  }
+  fitBoard();
+
+  const tb=document.getElementById('turnbar');
+  if(V.over){ tb.className='turnbar'; tb.textContent=V.over===V.you?'🏆 你赢了！':'💀 你输了'; }
+  else if(!V.bothHere){ tb.className='turnbar opp'; tb.textContent='等待对手加入…'; }
+  else if(myTurn()){ tb.className='turnbar me'; tb.textContent='轮到你行动（第 '+V.turn+' 回合）'; }
+  else { tb.className='turnbar opp'; tb.textContent='对手思考中…'; }
+
+  document.getElementById('handowner').textContent='（玩家'+V.you+'）';
+  const h=document.getElementById('hand'); h.innerHTML='';
+  const cnt={}; V.hand.forEach(c=>cnt[c]=(cnt[c]||0)+1);
+  Object.keys(cnt).forEach(c=>{
+    const el=document.createElement('div');
+    el.className='card'+(sel.card===c?' on':'')+(c===V.fresh?' fresh':'');
+    el.innerHTML=`${c===V.fresh?'<span class="new">新</span>':''}
+      <span class="ci">${T[c].i}</span>${T[c].n}<br><small>×${cnt[c]}</small>`;
+    el.onclick=()=>{ if(!myTurn())return toast('还没轮到你');
+      sel.uid=null; sel.card=sel.card===c?null:c; render(); };
+    h.appendChild(el);
+  });
+  if(!V.hand.length)h.innerHTML='<div class="hint">手牌为空，可以抽牌。</div>';
+
+  document.getElementById('hint').textContent =
+    V.over?'对局结束。' : !V.bothHere?'把上方房间码发给朋友。'
+    : !myTurn()?'对手行动中，请稍候。'
+    : sel.card==='MINE'?'点击任意空格埋雷（对手看不到）。'
+    : sel.card==='FIREBALL'?'点击红色高亮的敌方单位。'
+    : sel.card?'点击蓝色高亮的出生行空格布置。'
+    : sel.uid!=null?'绿色=可移动，红色=可攻击。'
+    : '选择一张牌，或点击自己的单位。';
+
+  document.getElementById('stats').innerHTML=
+    `<div style="color:#86efac">我方：场上 ${V.units.filter(u=>u.owner===V.you).length} · 手牌 ${V.hand.length} · 牌堆 ${V.deckCount}</div>
+     <div style="color:#fca5a5">对手：场上 ${V.units.filter(u=>u.owner!==V.you).length} · 手牌 ${V.oppHandCount} 张（内容保密） · 牌堆 ${V.oppDeckCount}</div>`;
+
+  const lg=document.getElementById('log');
+  lg.innerHTML=V.log.map(x=>`<div class="${x.cls||''}">${x.txt}</div>`).join('');
+  lg.scrollTop=lg.scrollHeight;
+
+  const busy=!myTurn();
+  document.getElementById('btnDraw').disabled=busy||!V.deckCount;
+  document.getElementById('btnPass').disabled=busy;
+  document.getElementById('btnCancel').disabled=busy;
+
+  const ov=document.getElementById('overlay');
+  if(oppLeft){ ov.style.display='flex';
+    ov.innerHTML='<h2>对手已断开</h2><div style="opacity:.8;font-size:12px">等待重连，或刷新页面重新开始。</div>'; }
+  else if(V.over){ ov.style.display='flex';
+    ov.innerHTML=`<h2>${V.over===V.you?'🏆 你赢了':'💀 你输了'}</h2>
+      <button onclick="send({t:'restart'})">再来一局</button>`; }
+  else ov.style.display='none';
+}
+
+document.getElementById('btnDraw').onclick=()=>act({type:'draw'});
+document.getElementById('btnPass').onclick=()=>act({type:'pass'});
+document.getElementById('btnCancel').onclick=()=>{sel={card:null,uid:null};render();};
+document.getElementById('codeTag').onclick=function(){
+  navigator.clipboard&&navigator.clipboard.writeText(this.textContent); toast('房间码已复制');
+};
+document.getElementById('codeInput').addEventListener('keydown',e=>{if(e.key==='Enter')joinRoom();});
+connect();
+</script>
+</body>
+</html>
